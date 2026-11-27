@@ -1,0 +1,445 @@
+Rent a Train — Technical Documentation
+
+Implementation reference: prototype 0.2.5
+Target game version: Cities: Skylines II 1.6.4f1
+
+This document describes the current implementation, its main methods, and the reasoning behind the chosen architecture. It distinguishes implemented behaviour from guarantees that still require further testing.
+
+1. Architecture
+
+Rent a Train adds externally supplied vehicle capacity to the game's existing depot and dispatch systems.
+
+The mod manages rental contracts, capacity and billing. The game continues to manage vehicle selection, spawning, pathfinding, line assignment and retirement.
+
+    Rental panel
+        ↓ UI triggers
+    Rental request queue
+        ↓ Simulation update
+    Rental contract and virtual depot capacity
+        ↓
+    Native depot dispatch and line requests
+        ↓
+    Vehicles travel from an outside connection
+
+The implementation currently supports buses and train sets, with one rental depot per vehicle type and city.
+
+Component                    Responsibility
+Mod                          Initialisation, settings registration and system scheduling
+Setting / LocaleEN           Global configuration and English localisation
+RentalPrefabSystem           Registration of the virtual bus depot prefab
+RentalDepotSystem            Contracts, depot integration, billing and cleanup
+RentalContract               Per-save rental and accounting data
+BusRentalSource              Reference from a bus depot proxy to its outside connection
+RoadConnectionResolver       Resolving outside markers to usable lane buffers
+RentalMaintenancePolicy      Temporary replacement capacity during maintenance returns
+RentalUISystem               UI bindings and fleet overview calculations
+Rent-A-Train.mjs              Rental window, entry buttons and budget presentation
+
+Tradeoff: Reusing native simulation behaviour keeps the mod relatively small and avoids implementing a parallel transport system. It also means that dispatch timing, congestion and vehicle travel remain subject to the game.
+
+2. Initialisation and lifecycle
+
+Mod.OnLoad(UpdateSystem)
+
+This method:
+
+1. Loads global settings through AssetDatabase.global.LoadSettings.
+2. Registers the settings UI and English localisation.
+3. Registers the mod's systems in the game update schedule.
+
+The relevant scheduling is:
+
+System                       Update phase
+RentalPrefabSystem           PrefabUpdate
+RentalUISystem               UIUpdate
+RentalDepotSystem            GameSimulation, before TransportDepotAISystem
+
+Running rental management before the native depot AI allows capacity changes to be available when the depot processes vehicle requests.
+
+RentalDepotSystem.GetUpdateInterval()
+
+The rental simulation runs once every 256 simulation frames.
+
+This interval is independent of rendered frame rate. Pausing the simulation also pauses contract processing and billing.
+
+City transitions
+
+OnGamePreload() clears queued requests and cached UI state, resets readiness flags and removes tracked runtime prefab additions.
+
+OnGameLoadingComplete() enables processing for a loaded city and recognises saved train-depot data associated with rental contracts. Runtime depot data is subsequently restored or updated by contract processing.
+
+Mod.OnDispose()
+
+This unregisters settings and clears queued requests. It is not a substitute for the save-cleanup workflow described below.
+
+3. Per-city contracts and global settings
+
+RentalContract
+
+RentalContract implements IComponentData and ISerializable.
+
+Field                        Purpose
+Capacity                     Contracted vehicle quantity
+DailyPrice                   Stored price per billing cycle
+LastFrame                    Last simulation frame accounted for
+FractionalCharge             Currency remainder carried between updates
+TotalCharged                 Cumulative charges
+AddedDispatchBuffer          Records whether cleanup may remove the dispatch buffer
+AddedOwnedBuffer             Records whether cleanup may remove the ownership buffer
+
+Despite its name, DailyPrice now represents the player-facing monthly price. The identifier remains unchanged for compatibility with existing serialized data.
+
+The record is stored:
+
+- On the selected outside-connection entity for trains.
+- On the separate virtual depot entity for buses.
+
+Consequently, rental quantities and accounting belong to the save containing those entities.
+
+Global configuration
+
+Setting contains:
+
+- BusMaximum
+- TrainMaximum
+- BusDailyPrice
+- TrainDailyPrice
+- UseUniversalModMenu
+- InitialWindowPosition
+
+Limit(bool bus) and Price(bool bus) defensively clamp configuration values before simulation use.
+
+Configuration                Default      Range
+Bus maximum                  20           1–100
+Train maximum                10           1–100
+Bus monthly price            1,000        100–10,000
+Train monthly price          5,000        100–10,000
+
+SetDefaults() restores these values and the default interface settings.
+
+Tradeoff: Global limits and pricing provide consistent rules between cities, while individual saves retain their own contracts. Loading another city can therefore cause its contracts to adapt to the currently selected global settings.
+
+4. Rental requests
+
+UI-to-simulation flow
+
+The UI submits both tab quantities through the setRentals trigger.
+
+RentalUISystem compares them with the current rental views and queues changed quantities using:
+
+    RentalDepotSystem.RequestRental(int type, int capacity)
+
+The simulation processes these requests in RentalDepotSystem.OnUpdate().
+
+ApplyRental(bool bus, int capacity)
+
+This method:
+
+1. Clamps the requested quantity.
+2. Finds an existing contract of that type.
+3. Creates a depot connection if a new positive contract is needed.
+4. Settles elapsed charges under the previous contract.
+5. Stores the new quantity and price.
+6. Updates depot capacity.
+7. Requests relevant depot-build requirement unlocks.
+
+Live settings changes
+
+TickContract() detects price changes and reduced maximums. It settles the old accounting period before applying the updated values.
+
+Reducing a maximum clamps the contract immediately on the next simulation update. Excess vehicles then retire through native behaviour; they are not forcibly deleted by the rental code.
+
+Current limitation: The bus and train requests are processed sequentially. Applying both tabs is not an atomic transaction with rollback if one request fails.
+
+5. Train depot implementation
+
+Connection selection
+
+FindConnection() selects a compatible railway outside connection. The current selection rule uses the lowest eligible entity index.
+
+Eligibility includes:
+
+- Railway transfer metadata.
+- No existing runtime depot role on the selected entity.
+- No conflicting pre-existing depot prefab data, unless tracked as belonging to this rental implementation.
+
+IsRailway() checks the outside-connection transfer flags.
+
+ValidatePrefab() guards against modifying an incompatible or conflicting prefab.
+
+Depot role
+
+GetTrainTemplate() copies TransportDepotData from a loaded native train depot prefab.
+
+The copied data is adjusted to disable production and local maintenance-duration processing. Vehicles are supplied on demand; maintenance returns are expected to leave through the outside connection.
+
+EnsureDepot() supplies the selected connection with the required depot role and buffers:
+
+- Game.Buildings.TransportDepot
+- ServiceDispatch
+- OwnedVehicle
+
+It also maintains the corresponding runtime TransportDepotData.
+
+The original outside connection's PrefabRef is preserved.
+
+Tradeoffs:
+
+- No visible depot building or cloned train asset is required.
+- Train depot behaviour can also serve cargo requests, so cargo trains may share the rental pool.
+- Prefab data is shared by entities using that prefab. The compatibility guards reduce interference, but other mods modifying the same data remain a risk.
+- Selecting a connection does not prove that every city line can reach it.
+
+6. Bus depot implementation
+
+Dedicated prefab
+
+RentalPrefabSystem.OnCreate() registers:
+
+    RentATrain.VirtualBusDepot
+
+This is a RentalDepotPrefab carrying a native TransportDepot component configured for:
+
+- TransportType.Bus
+- EnergyTypes.Fuel
+- Initial capacity of zero
+
+Registration occurs early so saved bus proxies can resolve their prefab identity during loading.
+
+Separate proxy entity
+
+CreateBusProxy() creates an invisible depot entity containing:
+
+- PrefabRef
+- Transform
+- Owner
+- BusRentalSource
+- TransportDepot
+- OwnedVehicle
+- ServiceDispatch
+- SubLane
+
+BusRentalSource.Connection stores a serialized reference to the original road outside connection.
+
+The proxy references the existing road network. It does not create another outside city or duplicate the lane network.
+
+Reason for a separate proxy: Road outside connections can already participate in taxi behaviour. Replacing their depot configuration with bus data would interfere with that role.
+
+Lane resolution
+
+Road outside markers do not necessarily contain their lane buffers directly.
+
+GetBusLaneSource() delegates to:
+
+    RoadConnectionResolver.FindLaneSource<T>()
+
+The resolver follows both Owner and Attached relationships. It uses a visited set to detect cycles and limits traversal to 64 processed entries.
+
+RefreshBusLanes() updates the proxy's lane references and attachment data when necessary.
+
+There is no requirement for a dedicated bus road. Ordinary road outside connections are eligible; actual vehicle reachability is still determined by native pathfinding.
+
+Current limitation: The bus prefab currently supports fuel-powered buses. Electric variants require additional work.
+
+7. Dispatch and maintenance replacement
+
+The mod does not assign rented vehicles to individual lines. Native line requests and depot dispatch remain responsible for deployment.
+
+Maintenance identification
+
+IsMaintenanceReturn() checks a rental-owned vehicle's public-transport or cargo-transport state.
+
+RentalMaintenancePolicy.NeedsReplacement() requires:
+
+    Returning
+    AND RequiresMaintenance
+    AND NOT parked
+    AND NOT dummy traffic
+
+Deleted or missing vehicles are excluded by the surrounding entity checks.
+
+Temporary capacity
+
+The runtime depot capacity becomes:
+
+    effective capacity = contracted quantity + maintenance returners
+
+A zero contract always produces zero replacement capacity.
+
+For example:
+
+    Contracted trains:          10
+    Maintenance returners:      2
+    Runtime depot capacity:    12
+    Potential service slots:   10
+    Billed quantity:            10
+
+PrepareMaintenanceReturns() moves maintenance returners to the beginning of the OwnedVehicle buffer. This matters because native depot capacity and disabling logic process vehicles in that order.
+
+The allowance is recalculated from actual returners rather than accumulated. It disappears as those vehicles leave.
+
+Tradeoff: Replacement can be dispatched before the old vehicle reaches the boundary, without charging for the temporary overlap. Native request timing and outside travel still apply.
+
+Not implemented: The mod does not suppress or rewrite missing-vehicle notifications. Preventing temporary maintenance-related line warnings remains a separate acceptance criterion; the reserve mechanism alone does not guarantee that no warning can appear during replacement travel.
+
+8. Billing
+
+RentalAccounting.Accrue()
+
+Accounting uses elapsed simulation frames:
+
+    charge accrued =
+        contracted quantity
+        × monthly price
+        × elapsed frames
+        ÷ 262,144
+
+The denominator represents one standard day/night simulation cycle, which corresponds to the game's monthly budget cycle.
+
+Charge():
+
+1. Calculates elapsed frames.
+2. Updates LastFrame.
+3. Accrues the charge.
+4. Subtracts whole currency units from PlayerMoney.
+5. Updates TotalCharged.
+
+Fractional currency remains in FractionalCharge, preventing repeated rounding loss.
+
+Additional guards reject implausible backward-timeline deltas and limit individual deductions to stay within the native money arithmetic range.
+
+Tradeoffs:
+
+- All contracted capacity is billed, including unused slots.
+- Maintenance reserve capacity is excluded from billing.
+- Prices change prospectively rather than recalculating previous charges.
+- Mods changing simulation-time conventions may require compatibility handling.
+
+9. UI bindings and fleet overview
+
+Backend state
+
+RentalUISystem.WriteState() publishes a RawValueBinding named:
+
+    RentATrain.state
+
+It contains rental quantities, deployed counts, prices, limits, overview values, interface preferences and status information.
+
+OnUpdate() avoids publishing unchanged state by comparing the rental revision, configuration hash and status.
+
+Fleet overview
+
+UpdateSummary() runs every 30 UI updates, only while the rental panel is open.
+
+Display                      Calculation
+Vehicles needed              Native vehicle-count formula using line intervals and stable route duration inputs
+Depot capacity               Owned depot capacity with installed upgrades and native efficiency calculation
+Rented                       Current contract quantity
+Shortfall                    max(0, needed − depot capacity − rented)
+
+Inactive lines are excluded. Configured day/night lines contribute their demand. Train cargo lines are included because the native train depot pool is shared.
+
+This overview does not control dispatch and may differ from transport mods that introduce their own demand policies.
+
+Frontend state
+
+RentalApp() maintains separate bus and train drafts.
+
+- Tab switching preserves both drafts.
+- Apply submits both quantities.
+- Closing and reopening restores the current contracts.
+- Editing clears the confirmation label.
+
+Change confirmed is currently a frontend submission acknowledgement, not a transactional backend success receipt.
+
+sliderQuantity(start, end, position) implements the native slider's three-argument conversion contract.
+
+10. Window placement and entry buttons
+
+register() attaches components to:
+
+- GameTopLeft
+- UniversalModMenu
+- Game
+
+RentalButton() selects the native floating or round button variant. Only the configured entry is visible.
+
+The window is rendered independently of either entry point, preventing toolbar placement from affecting its coordinates.
+
+PositionedRentalPanel() uses the native draggable panel.
+
+For upper-left placement, it measures the panel and a CSS probe at:
+
+    left: 10rem;
+    top: calc(10rem + var(--floatingToggleSize) + 6rem);
+
+panelInitialPosition() converts those coordinates into the normalized position expected by the native draggable panel.
+
+Measurement has bounded retries and a fallback position. No persistent offset transform is applied, preserving native dragging behaviour.
+
+11. Budget integration
+
+The frontend wraps the native BudgetPage and BudgetChart exports.
+
+decorateBudgetPage()
+
+This adds:
+
+- The Rented vehicles expense row.
+- Separate bus and train values.
+- The rental contribution to total expenses and monthly balance.
+- Selected-item detail data.
+
+decorateBudgetChart()
+
+This adds the rental series to the stacked expense chart.
+
+These functions modify presentation data only. Actual deductions occur exclusively in Charge().
+
+mapChildren() preserves whether a React child was a single element or an array. This prevents the previously observed TutorialGuideTarget crash.
+
+BudgetBoundary catches rendering failures within the optional extension and falls back to the native component.
+
+Tradeoffs and limits:
+
+- No new native expense enum category is registered.
+- Historical statistics categories and the toolbar income forecast are not extended.
+- The implementation depends on current component export paths and budget structure, including the built-in expense source used to identify the expense section.
+- The wrappers assume the relevant native exports remain callable function components.
+
+12. Unlocks, diagnostics and cleanup
+
+UnlockDepotBuildRequirements() requests normal unlock events for relevant depot-build requirements. It does not broadly unlock the transport progression tree. Completed unlocks remain in the save.
+
+WriteDiagnostics() logs connection references, resolved lane sources, depot flags, dispatch information, contracts and maintenance return counts.
+
+Cleanup is processed in OnUpdate() only after every contract has zero capacity and no counted vehicles.
+
+RemoveEmptyDepot() removes the depot role and eligible added buffers. Explicit cleanup then removes contracts and marks bus proxies for deletion. RestorePrefabData() removes tracked runtime prefab additions during preload.
+
+Removal limitation: This workflow prepares a save for removal. It does not guarantee safe arbitrary-time removal while rented vehicles or mod-specific entities remain active.
+
+13. Performance and verification
+
+The implementation uses no Harmony patches and performs no recurring full-city vehicle scan.
+
+Its main costs are:
+
+- Contract and owned-fleet processing every 256 simulation frames.
+- Limited connection traversal for the bus proxy.
+- Overview queries every 30 UI updates while the panel is open.
+- Normal native vehicle simulation and pathfinding.
+
+The C# management code performs direct ECS access and is not a fully Burst-jobified simulation. Such access can synchronize relevant dependencies. Low overhead is a design objective, not a measured performance guarantee.
+
+Automated verification is provided by:
+
+Test                         Coverage
+Test-Accounting.ps1          Limits, accrual, rounding, rate changes and timeline handling
+Test-RoadConnections.ps1     Owner/Attached traversal, missing sources and cycles
+Test-Maintenance.ps1         Replacement eligibility, temporary capacity and unchanged billing
+Test-UI.mjs                  Budget structure, error fallback, slider handling, drafts, confirmation and placement calculations
+
+The project targets .NET Framework 4.8 and uses the installed CS-II modding toolchain for postprocessing. DeployWIP copies the assembly, native outputs and UI assets into the local mod directory; a normal build does not publish the mod.
+
+Automated tests do not replace long-running Unity simulation, maintenance lifecycle, save/load, removal or cross-mod compatibility testing.

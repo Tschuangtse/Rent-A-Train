@@ -1,0 +1,58 @@
+Rent a Train — Feature Overview
+
+What does this mod do?
+
+Rent a Train lets your city rent buses and train sets without constructing a local depot.
+
+Rented vehicles arrive through existing road or railway outside connections and become available to the game's normal public transport system. Your lines request vehicles as usual—no manual assignment is required.
+
+The rental window has separate Buses and Trains tabs and shows:
+
+- Vehicles needed: the combined vehicle demand of your lines.
+- Depot capacity: the capacity provided by your own depots.
+- Rented: your currently contracted rental capacity.
+- Shortfall: the remaining deficit.
+
+Adjust both tabs and press Apply to confirm their changes together. Unconfirmed changes survive tab switches and are discarded when the window closes.
+
+Rental charges apply to all contracted capacity, including unused vehicles. Maintenance returners receive temporary replacement capacity so they do not block replacement dispatch. Replacement vehicles still need time to arrive from outside the city.
+
+Rental quantities and billing data are saved separately for each city.
+
+Why was it created?
+
+Building a full depot can be a substantial investment in money and space, particularly when a small city only needs a few vehicles.
+
+Rent a Train provides an alternative: pay a recurring rental fee and use an external fleet until—or alongside—the construction of your own depots.
+
+The mod is designed to keep its additional simulation work small by using the game's existing vehicle dispatch, routing and return systems wherever possible.
+
+Which settings exist?
+
+Settings are organised into Buses, Trains and General tabs.
+
+Setting                              Default      Configurable range
+Maximum rented buses                 20           1–100
+Maximum rented train sets            10           1–100
+Monthly price per bus                1,000        100–10,000
+Monthly price per train set          5,000        100–10,000
+
+Prices and limits are global settings. Each city retains its own rental quantities.
+
+You can change settings during a game. New prices apply going forward. Lowering a maximum below the current rental quantity reduces the contract accordingly; excess vehicles return through normal game behaviour.
+
+Additional options include:
+
+- Use Universal Mod Menu: replaces the dedicated top-left button with an entry in the Universal Mod Menu.
+- Initial window position: opens the draggable window in the centre or upper-left corner.
+- Reset to defaults: restores the default settings.
+- Write diagnostic report: records technical information for troubleshooting.
+- Remove inactive rental data: cleans up inactive contracts after both rental quantities reach zero and all rented vehicles have returned.
+
+Monthly costs appear under Economy → Budget → Expenses → Rented vehicles.
+
+Development disclaimer
+
+Rent a Train is based on a human-written design document and has been manually playtested, including changing settings during gameplay and the mod-removal workflow. Its code was developed using OpenAI Codex.
+
+Playtesting cannot cover every city, game update or combination of mods. Keep a backup of important saves. Before removing the mod, end both rentals, wait for all rented vehicles to return, run Remove inactive rental data, save, and exit the game before disabling it. Removing the mod with active rentals is not recommended.

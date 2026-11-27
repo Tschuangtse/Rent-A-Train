@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <rect width="128" height="128" rx="23" fill="#7bd3ec"/>
+  <path d="M64 13v102" stroke="#bcecf6" stroke-width="2"/>
+  <clipPath id="train-half"><path d="M10 12h50v104H10z"/></clipPath>
+  <g clip-path="url(#train-half)" fill="none" stroke="#fff" stroke-width="7" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M31 91V47c0-18 10-27 29-27s29 9 29 27v44c0 7-5 11-12 11H43c-7 0-12-4-12-11z"/>
+    <path d="M34 46h52v24H34z" fill="#fff" stroke="none"/>
+    <path d="M46 33h28M44 102l-8 10m40-10 8 10"/>
+    <circle cx="44" cy="85" r="4" fill="#fff" stroke="none"/>
+  </g>
+  <g fill="none" stroke="#fff" stroke-width="7" stroke-linecap="round">
+    <path d="M104 40c-5-7-25-7-25 5 0 15 25 8 25 24 0 13-20 15-28 6M90 25v65"/>
+  </g>
+</svg>
